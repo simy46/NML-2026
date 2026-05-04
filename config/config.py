@@ -1,7 +1,8 @@
 import yaml
+from consts.consts import CONFIG_PATH
 
 class Config:
-    def __init__(self, path: str):
+    def __init__(self, path: str = CONFIG_PATH):
         self.path = path
 
     def load(self) -> dict:

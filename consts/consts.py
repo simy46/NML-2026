@@ -1,5 +1,6 @@
 
 # Paths
+CONFIG_PATH = "config/model.yaml"
 TRAIN_DIR = "data/train/train"
 VAL_DIR = "data/test/test"
 TEST_DIR = "data/test/test"
