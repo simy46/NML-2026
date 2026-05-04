@@ -1,0 +1,10 @@
+torch
+torch-geometric
+pandas
+networkx
+matplotlib
+wandb
+pyyaml
+jupyter
+notebook
+ipykernel
