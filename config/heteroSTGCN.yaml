@@ -1,3 +1,6 @@
+MODEL_NAME: "HeteroSTGCN"
+# MODEL_PATH: "/saved_models/stgcn_model/stgcn_model.pth"
+
 data:
   context_size: 8
   horizon_size: 12

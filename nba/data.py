@@ -93,6 +93,37 @@ class NBASampler(Sampler):
 
     def __len__(self):
         return len(self.max_start)
+    
+
+class FoldSampler(NBASampler):
+    def __init__(self, allowed_indices: list, batch_size: int, max_start: list, seed=0, shuffle=True):
+        super().__init__(batch_size, max_start, seed, shuffle)
+        self.allowed_indices = allowed_indices
+
+    def __iter__(self):
+        # Only shuffle the indices belonging to this fold
+        n = len(self.allowed_indices)
+        if self.shuffle:
+            perm_idx = torch.randperm(n, generator=self.generator).tolist()
+            perm = [self.allowed_indices[i] for i in perm_idx]
+        else:
+            perm = self.allowed_indices
+
+        for k in range(0, len(perm), self.batch_size):
+            batch_indices = perm[k : k + self.batch_size]
+
+            for idx in batch_indices:
+                m_start = self.max_start[idx]
+                start = torch.randint(
+                    0,
+                    m_start + 1,
+                    size=(),
+                    generator=self.generator,
+                ).item()
+                yield idx, start
+
+    def __len__(self):
+        return len(self.allowed_indices)
 
 
 class NBADataModule:

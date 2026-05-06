@@ -5,7 +5,6 @@ TRAIN_DIR = "data/train/train"
 VAL_DIR = "data/test/test"
 TEST_DIR = "data/test/test"
 SUBMISSION_DIR = "data/submission/"
-MODEL_PATH = "stgcn_model.pth"
 
 # logic consts
 ENTITY_MAPPING = {-1: "Team_A", 0: "Ball", 1: "Team_B"}

@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import RGATConv
+from torch import Tensor
+import torch_geometric as pyg
 
 from nba.graphs import build_hetero_edges
 
@@ -105,15 +107,137 @@ class NBAModel_HeteroSTGCN(nn.Module):
         )
 
         return out
+    
+
+class GAN_GRU(torch.nn.Module):
+    """ Module to perform predictions on the NBA dataset. """
+    def __init__(self, input_feature_dim:int, num_nodes:int,output_dim:int,state_dim_RNN:int,state_dim_GNN:int,state_dim_MLP:int, graph_conn_radius:float, context_size:int,horizon_size:int):
+        super().__init__()
+        # Modules
+        embedding_dim = 4
+        # huge oversmoothing with GCN and fully connected graph
+        self.GNN = pyg.nn.GCN(in_channels=input_feature_dim + embedding_dim, hidden_channels=state_dim_GNN, num_layers=2)
+        # try with GAT
+
+        # self.GNN = pyg.nn.GAT(
+        #             in_channels=input_feature_dim + embedding_dim, 
+        #             hidden_channels=state_dim_GNN, 
+        #             num_layers=2, 
+        #             heads=4, 
+        #             concat=False
+        #         )
+        # self.RNN = torch.nn.GRU(input_size=state_dim_GNN, hidden_size = state_dim_RNN, bias=True)
+        self.RNN = torch.nn.GRUCell(input_size=state_dim_GNN, hidden_size=state_dim_RNN, bias=True)
+        self.proj = pyg.nn.MLP(in_channels=state_dim_RNN, hidden_channels=state_dim_MLP, out_channels=output_dim, num_layers=2)
+        
+        # Time attributes
+        self.context_size = context_size
+        self.horizon_size = horizon_size
+
+        self.graph_conn_radius = graph_conn_radius # has to be normalized
+
+        #base edges for edge index
+        base_edges = []
+        for i in range(num_nodes):
+            for j in range(num_nodes):
+                base_edges.append([i, j])
+        self.register_buffer('base_edge_index', torch.tensor(base_edges, dtype=torch.long).T)
+
+        # node embeddings - they are added to the hidden state to identify the players
+        self.node_emb = torch.nn.Embedding(num_nodes, embedding_dim)
+
+    def forward(self,X:Tensor) -> Tensor:
+        """ Forward pass. """
+        B,_,N,F = X.shape
+        h_prev = torch.zeros(size=(B*N,self.RNN.hidden_size), device=X.device)
+        T = self.context_size+self.horizon_size
+        batch_vector = torch.arange(B, device=X.device).repeat_interleave(N)
+
+        # construct edge idx list - offset for the entire batch - fully connected graph
+        # TODO: can it learn different weights for different edge relations now?
+        # edge_index_list = []
+        # for b in range(B):
+        #     edge_index_list.append(self.base_edge_index + (b * N))
+        
+        # # dim [2, B * N * N]
+        # edge_index = torch.cat(edge_index_list, dim=1)
+
+        node_ids = torch.arange(N, device=X.device).repeat(B)
+        emb = self.node_emb(node_ids)
+
+        all_preds = []
+        for t in range(T):
+            # Format input
+            if t < self.context_size:
+                x = X[:,t,:,:].reshape(B*N,F)
+                curr_pos = x[:, :2]
+            else:
+                # combine with static features
+                x = torch.cat([curr_pos,X[:,0,:,2:].reshape(B*N,2)],dim=1)
+            # edge index built dynamically with distances - to avoid oversmoothing
+            edge_index = self.radius_graph(curr_pos, r=self.graph_conn_radius, batch=batch_vector)
+            # add embedding to make players identifiable -> they loose the spatial awareness with that
+            # node_ids = torch.arange(N, device=X.device).repeat(B)
+            # x[:, 2:] = x[:, 2:] + self.node_emb(node_ids) # don't add node embedding at positions 
+            # concat instead of add
+            x_w_emb = torch.cat([x, emb], dim=-1)
+
+            # Process input
+            h_GNN = self.GNN(x_w_emb, edge_index)
+            h = self.RNN(h_GNN,h_prev)
+
+            delta = self.proj(h) 
+            
+            # The new position is: last position + predicted movement -> should evict the jump
+            curr_pos = curr_pos + delta
+            
+            if t >= self.context_size - 1 and t < T - 1:
+                all_preds.append(curr_pos)
+
+            # Update state
+            h_prev = h
+        all_preds = torch.stack(all_preds,dim=0) # [T,B*N,2]
+        return all_preds
+    
+    def radius_graph(self, pos, r, batch):
+        # pos: [Batch*N, 2], r: float, batch: [Batch*N]
+        # Compute pairwise distances
+        dist_mat = torch.cdist(pos, pos) 
+        
+        adj = dist_mat <= r
+        
+        batch_mask = batch.unsqueeze(0) == batch.unsqueeze(1)
+        
+        adj = adj & batch_mask
+        adj.fill_diagonal_(False)
+        
+        # Convert to edge_index [2, E]
+        return adj.nonzero(as_tuple=False).t().contiguous()
 
 
-def build_model(cfg: dict) -> NBAModel_HeteroSTGCN:
-    return NBAModel_HeteroSTGCN(
-        input_dim=cfg["data"]["input_dim"],
-        output_dim=cfg["data"]["output_dim"],
-        state_dim=cfg["model"]["state_dim"],
-        context_size=cfg["data"]["context_size"],
-        horizon_size=cfg["data"]["horizon_size"],
-        num_entities=cfg["data"]["num_entities"],
-        num_relations=cfg["model"].get("num_relations", 5),
-    )
+def build_model(cfg: dict) -> nn.Module:
+
+    if cfg["MODEL_NAME"] == "HeteroSTGCN":
+        return NBAModel_HeteroSTGCN(
+            input_dim=cfg["data"]["input_dim"],
+            output_dim=cfg["data"]["output_dim"],
+            state_dim=cfg["model"]["state_dim"],
+            context_size=cfg["data"]["context_size"],
+            horizon_size=cfg["data"]["horizon_size"],
+            num_entities=cfg["data"]["num_entities"],
+            num_relations=cfg["model"].get("num_relations", 5),
+        )
+    elif cfg["MODEL_NAME"] == "GAN_GRU":
+        return GAN_GRU(
+            input_feature_dim=cfg["data"]["input_dim"],
+            output_dim=cfg["data"]["output_dim"],
+            num_nodes=cfg["model"]["num_nodes"],
+            state_dim_GNN=cfg["model"]["state_dim_GNN"],
+            state_dim_RNN=cfg["model"]["state_dim_RNN"],
+            state_dim_MLP=cfg["model"]["state_dim_MLP"],
+            graph_conn_radius=cfg["model"]["graph_conn_radius"],
+            context_size=cfg["data"]["context_size"],
+            horizon_size=cfg["data"]["horizon_size"],
+        )
+    else:
+        print("model not found")

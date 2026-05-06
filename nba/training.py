@@ -3,10 +3,16 @@ import os
 import torch
 from torch import Tensor
 
-from consts.consts import ENTITY_MAPPING, MODEL_PATH
-from nba.data import NBADataModule
+from consts.consts import ENTITY_MAPPING
+from nba.data import NBADataModule, FoldSampler
 from nba.models import build_model
 from nba.wandb_logger import WandBLogger
+from nba.localLogger import LocalLogger
+from sklearn.model_selection import KFold, train_test_split
+from torch.utils.data import DataLoader, Subset
+import wandb
+import copy
+import numpy as np
 
 
 class MultiStepMSE:
@@ -51,7 +57,7 @@ class NBATrainer:
 
         self.epochs = cfg["training"]["epochs"]
         self.seed = cfg["training"].get("seed", 0)
-        self.model_path = MODEL_PATH
+        self.model_path = f'saved_models/{cfg["MODEL_NAME"]}/checkpoint.pth'
 
         self.data = NBADataModule(cfg)
         self.data.setup()
@@ -76,14 +82,16 @@ class NBATrainer:
         )
 
         self.logger = WandBLogger(cfg)
+        self.local_logger = LocalLogger(log_dir="saved_models", model_name=cfg["MODEL_NAME"])
+
 
     def train(self):
+        """Train model on all the data"""
         run = self.logger.start()
 
         try:
             dataloader_dict = {
                 "train": self.data.train_dataloader,
-                "val": self.data.val_dataloader,
             }
 
             for epoch in range(self.epochs):
@@ -110,7 +118,7 @@ class NBATrainer:
             if run is not None:
                 run.finish()
 
-    def train_one_epoch(self, dataloader, split):
+    def train_one_epoch(self, dataloader, split, silent=False):
         avg_loss = 0
         batches_processed = 0
 
@@ -124,12 +132,10 @@ class NBATrainer:
             if split == "train":
                 self.optimizer.zero_grad()
                 loss.backward()
-
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.cfg["training"].get("grad_clip", 10.0),
                 )
-
                 self.optimizer.step()
 
             avg_loss += loss.item()
@@ -137,10 +143,89 @@ class NBATrainer:
 
         if batches_processed > 0:
             avg_loss = avg_loss / batches_processed
-            self.logger.log({f"{split}_loss": avg_loss})
-            print(f"  [{split.upper()}] Loss: {avg_loss:.4f}")
-        else:
-            print(f"  Warning: No batches processed for {split} split.")
+            if not silent:
+                self.logger.log({f"{split}_loss": avg_loss})
+                print(f"  [{split.upper()}] Loss: {avg_loss:.4f}")
+            return avg_loss
+        return 0.0
+
+    def train_k_fold(self, k: int = 2):
+        num_sequences = len(self.data.train_dataset)
+        indices = list(range(num_sequences))
+        
+        kf = KFold(n_splits=k, shuffle=True, random_state=self.seed)
+        global_best_loss = float('inf')
+        
+        patience = self.cfg["training"].get("early_stopping_patience", 5)
+        min_delta = self.cfg["training"].get("early_stopping_delta", 1e-4)
+
+        test_losses = []
+
+        for fold, (train_idx, temp_val_idx) in enumerate(kf.split(indices)):
+            val_idx, test_idx = train_test_split(
+                temp_val_idx, test_size=0.5, random_state=self.seed
+            )
+
+            self.model = build_model(self.cfg).to(self.device)
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), 
+                lr=self.cfg["training"].get("lr", 1e-3)
+            )
+            self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=300, gamma=0.5)
+            early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
+
+            train_sampler = FoldSampler(train_idx.tolist(), self.batch_size, self.data.train_dataset.max_start, seed=self.seed)
+            val_sampler = FoldSampler(val_idx.tolist(), self.batch_size, self.data.train_dataset.max_start, seed=self.seed, shuffle=False)
+            test_sampler = FoldSampler(test_idx.tolist(), self.batch_size, self.data.train_dataset.max_start, seed=self.seed, shuffle=False)
+
+            train_loader = DataLoader(self.data.train_dataset, batch_size=self.batch_size, sampler=train_sampler)
+            val_loader = DataLoader(self.data.train_dataset, batch_size=self.batch_size, sampler=val_sampler)
+            test_loader = DataLoader(self.data.train_dataset, batch_size=self.batch_size, sampler=test_sampler)
+
+            # with wandb.init(project="nba-kfold", group="kfold-exp", name=f"fold_{fold}") as run:
+            for epoch in range(self.epochs):
+                train_sampler.set_epoch(epoch)
+                
+                self.model.train()
+                train_loss = self.train_one_epoch(train_loader, "train", silent=True)
+
+                self.model.eval()
+                with torch.no_grad():
+                    val_loss = self.train_one_epoch(val_loader, "val", silent=True)
+
+                self.scheduler.step()
+                # run.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+
+                self.local_logger.log_epoch(fold, epoch, {
+                    "train_loss": train_loss,
+                    "val_loss": val_loss
+                })
+
+                early_stopping(val_loss, self.model)
+                if early_stopping.early_stop:
+                    print(f"  Fold {fold} stopped early at epoch {epoch}")
+                    break
+
+            if early_stopping.best_model_state:
+                self.model.load_state_dict(early_stopping.best_model_state)
+
+            self.model.eval()
+            with torch.no_grad():
+                test_loss = self.train_one_epoch(test_loader, "test", silent=True)
+
+            test_losses.append(test_loss)
+            self.local_logger.log_test(fold, test_loss)
+
+            if test_loss < global_best_loss:
+                    global_best_loss = test_loss
+                    torch.save(self.model.state_dict(), self.model_path)
+
+            # run.log({"final_test_loss": test_loss})
+            print(f"Fold {fold} | Test Loss: {test_loss:.4f}")
+
+        self.local_logger.save("kfold_results.json")
+        print(f"Training finished\nAvg. test loss over folds: {np.mean(test_losses)}")
+        # TODO: still train the model on all the data for the predictions
 
     def evaluate(self):
         self.model.eval()
@@ -188,3 +273,25 @@ class NBATrainer:
         pred = torch.cat([X, pred], dim=0).detach()
 
         return pred
+    
+class EarlyStopping:
+    def __init__(self, patience: int = 5, min_delta: float = 0, verbose: bool = True):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.verbose = verbose
+        self.counter = 0
+        self.best_loss = float('inf')
+        self.early_stop = False
+        self.best_model_state = None
+
+    def __call__(self, val_loss, model):
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.best_model_state = copy.deepcopy(model.state_dict())
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.verbose:
+                print(f"  [EarlyStopping] Counter {self.counter} of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True

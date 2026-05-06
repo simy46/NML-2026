@@ -10,7 +10,7 @@ class NBAVisualizer:
         self.trainer = trainer
 
     def plot_example(self, sequence_idx: int = 0, start: int = 0):
-        dataset = self.trainer.data.val_dataset
+        dataset = self.trainer.data.train_dataset
 
         X, y = dataset[(sequence_idx, start)]
 
@@ -33,7 +33,7 @@ class NBAVisualizer:
         plt.show()
 
     def animate_example(self, sequence_idx: int = 0, start: int = 0):
-        dataset = self.trainer.data.val_dataset
+        dataset = self.trainer.data.train_dataset
 
         X, y = dataset[(sequence_idx, start)]
         full_pred = self.trainer.get_trajectory(X)
