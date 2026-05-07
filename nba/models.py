@@ -109,6 +109,127 @@ class NBAModel_HeteroSTGCN(nn.Module):
         return out
     
 
+class RGATLSTMCell(nn.Module):
+    def __init__(
+        self, 
+        input_dim,
+        state_dim,
+        rgat_num_relations,
+        rgat_dim_per_head,
+        rgat_heads,
+    ):
+        super(RGATLSTMCell, self).__init__()
+        self.rgat = RGATConv(
+            in_channels=input_dim,
+            out_channels=rgat_dim_per_head,
+            num_relations=rgat_num_relations,
+            heads=rgat_heads,
+        )
+        rgat_dim = rgat_dim_per_head * rgat_heads
+        self.lstm = nn.LSTMCell(rgat_dim, state_dim)
+
+    def forward(self, x, edge_index, edge_type, h_prev, c_prev):
+        rgat_out = self.rgat(x, edge_index, edge_type)
+        spatial_features = F.relu(rgat_out)
+        return self.lstm(spatial_features, (h_prev, c_prev))
+
+
+class RGATLSTMNBAModel(nn.Module):
+    def __init__(
+        self,
+        input_dim=4,
+        output_dim=2,
+        context_size=8,
+        horizon_size=12,
+        num_entities=11,
+        state_dim=128,
+        rgat_num_relations=5,
+        rgat_dim_per_head=64,
+        rgat_heads=4,
+        pred_head_hidden_dim=64,    
+    ):
+        super(RGATLSTMNBAModel, self).__init__()
+        self.context_size = context_size
+        self.horizon_size = horizon_size
+        self.window_size = context_size + horizon_size
+        self.num_entities = num_entities
+        self.state_dim = state_dim
+
+        self.rgat_lstm_cell = RGATLSTMCell(
+            input_dim=input_dim,
+            state_dim=state_dim,
+            rgat_num_relations=rgat_num_relations,
+            rgat_dim_per_head=rgat_dim_per_head,
+            rgat_heads=rgat_heads,
+        )
+
+        self.pred_head = nn.Sequential(
+            nn.Linear(state_dim, pred_head_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(pred_head_hidden_dim, output_dim),
+        )
+    
+    def forward(self, X):
+        batch_size, context_size, num_entity, feature_dim = X.shape
+        device = X.device
+
+        static_features = X[:, 0, :, 2:]
+        team_batch = X[:, 0, :, 3]
+        edge_index, edge_type = build_hetero_edges(team_batch, device)
+        h = torch.zeros(
+                batch_size*num_entity, self.state_dim, 
+                device=device,
+            ) 
+        c = torch.zeros(
+                batch_size*num_entity, self.state_dim, 
+                device=device,
+            )
+        curr_coords = torch.zeros(
+            batch_size, num_entity, 2, 
+            device=device,
+        )
+        all_preds = []
+
+        for t in range(self.window_size):
+            # extract input features for time step t
+            if t < self.context_size:
+                x_t = X[:, t, :, :].reshape(
+                    batch_size*num_entity, 
+                    feature_dim
+                )
+            else:
+                x_t = torch.cat(
+                    [curr_coords, static_features], 
+                    dim=-1,
+                ).reshape(
+                    batch_size*num_entity, 
+                    feature_dim
+                )
+            
+            # pass through cell
+            h, c = self.rgat_lstm_cell(x_t, edge_index, edge_type, h, c)
+
+            # prediction for timesteps in horizon
+            if self.context_size-1 <= t and t < self.window_size-1:
+                delta = self.pred_head(h)
+                if t == self.context_size - 1:
+                    prev_coords = X[:, t, :, :2]
+                else:
+                    prev_coords = curr_coords
+                curr_coords = prev_coords + delta.reshape(
+                    batch_size, 
+                    num_entity, 
+                    2
+                )
+                all_preds.append(curr_coords)
+        
+        return torch.stack(all_preds, dim=0).reshape(
+            self.horizon_size,
+            batch_size * num_entity,
+            2,
+        )
+    
+
 class GAN_GRU(torch.nn.Module):
     """ Module to perform predictions on the NBA dataset. """
     def __init__(self, input_feature_dim:int, num_nodes:int,output_dim:int,state_dim_RNN:int,state_dim_GNN:int,state_dim_MLP:int, graph_conn_radius:float, context_size:int,horizon_size:int):
@@ -226,6 +347,19 @@ def build_model(cfg: dict) -> nn.Module:
             horizon_size=cfg["data"]["horizon_size"],
             num_entities=cfg["data"]["num_entities"],
             num_relations=cfg["model"].get("num_relations", 5),
+        )
+    elif cfg["MODEL_NAME"] == "RGATLSTM":
+        return RGATLSTMNBAModel(
+            input_dim=cfg["data"]["input_dim"],
+            output_dim=cfg["data"]["output_dim"],
+            context_size=cfg["data"]["context_size"],
+            horizon_size=cfg["data"]["horizon_size"],
+            num_entities=cfg["data"]["num_entities"],
+            state_dim=cfg["model"]["state_dim"],
+            rgat_num_relations=cfg["model"].get("rgat_num_relations", 5),
+            rgat_dim_per_head=cfg["model"].get("rgat_dim_per_head", 64),
+            rgat_heads=cfg["model"].get("rgat_heads", 4),
+            pred_head_hidden_dim=cfg["model"].get("pred_head_hidden_dim", 64),
         )
     elif cfg["MODEL_NAME"] == "GAN_GRU":
         return GAN_GRU(
