@@ -8,3 +8,5 @@ pyyaml
 jupyter
 notebook
 ipykernel
+seaborn
+scikit-learn
