@@ -5,7 +5,7 @@ from torch_geometric.nn import RGATConv
 from torch import Tensor
 import torch_geometric as pyg
 
-from nba.graphs import build_hetero_edges
+from nba.graphs import build_hetero_edges, SpaceTimeGraph
 
 
 class HeteroSTGCNCell(nn.Module):
@@ -336,6 +336,148 @@ class GAN_GRU(torch.nn.Module):
         return adj.nonzero(as_tuple=False).t().contiguous()
 
 
+
+class SpaceTimeGNN(nn.Module):
+    """
+    SpaceTimeGNN - Same graph strategy at a given time-step, we connect each individual graph to obtain a 
+    big unique graph that simultaneously models the time-series.
+
+    Nodes are (entity, timestep) pairs.
+    Spatial edges connect entities inside each timestep.
+    Temporal edges connect the same entity across consecutive timesteps.
+
+    Input:
+        X: (B, C, N, F)
+
+    Output:
+        preds: (H, B * N, 2)
+    
+    TODO: This currently assumes a fixed context window and predicts the whole horizon in one shot.
+    It would be nice to extend the model to support variable-length contexts and autoregressive next-step prediction,
+    to get some LLM-style training over all prefixes of a trajectory sequence.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+
+        # Data config
+        data_cfg = config["data"]
+        self.input_dim = data_cfg["input_dim"]
+        self.output_dim = data_cfg["output_dim"]
+        self.context_size = data_cfg["context_size"]
+        self.horizon_size = data_cfg["horizon_size"]
+        self.num_entities = data_cfg["num_entities"]
+
+        # Model config
+        model_cfg = config["model"]
+        self.stgnn_num_relations = model_cfg["num_relations"]
+        self.stgnn_dim_per_head = model_cfg["dim_per_head"]
+        self.stgnn_heads = model_cfg["heads"]
+        self.stgnn_num_layers = model_cfg["num_layers"]
+        self.pred_head_hidden_dim = model_cfg["pred_head_hidden_dim"]
+        self.hidden_dim = self.stgnn_dim_per_head * self.stgnn_heads
+
+        self.device = torch.device(config["training"]["device"])
+
+        # Graph builder
+        self.graph_builder = SpaceTimeGraph(config)
+
+        # Input projection
+        self.input_proj = nn.Linear(
+            self.input_dim,
+            self.hidden_dim,
+        )
+
+        # Spatio-temporal RGAT layers
+        self.convs = nn.ModuleList()
+        for _ in range(self.stgnn_num_layers):
+            self.convs.append(
+                RGATConv(
+                    in_channels=self.hidden_dim,
+                    out_channels=self.stgnn_dim_per_head,
+                    num_relations=self.stgnn_num_relations,
+                    heads=self.stgnn_heads,
+                )
+            )
+
+        # Normalization layers
+        self.norms = nn.ModuleList(
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.stgnn_num_layers)]
+        )
+
+        # Prediction head
+        # Predict H future (x,y) offsets
+        self.pred_head = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim,
+                self.pred_head_hidden_dim,
+            ),
+            nn.ReLU(),
+            nn.Linear(
+                self.pred_head_hidden_dim,
+                self.horizon_size * self.output_dim,
+            ),
+        )
+
+    def forward(self, X):
+        """
+        X: (B, C, N, F)
+        """
+        B, C, N, F_dim = X.shape
+        assert X.device.type == self.device.type, f"Input X is on {X.device}, but model config expects {self.device}"
+
+        assert C == self.context_size
+        assert N == self.num_entities
+        assert F_dim == self.input_dim
+
+        # Static team labels, shape (B, N)
+        team_batch = X[:, 0, :, 3]
+
+        # Build one spatial graph per timestep
+        timestep_graphs = []
+        for t in range(C):
+            edge_index_t, edge_type_t = build_hetero_edges(team_batch, self.device)
+            timestep_graphs.append((edge_index_t, edge_type_t))
+
+        # Combine into one big space-time graph
+        edge_index, edge_type = self.graph_builder.build_full_graph(timestep_graphs)
+
+        # Flatten nodes: (B, C, N, F) -> (C, B, N, F) -> (C * B * N, F)
+        # This matches graph indexing: timestep blocks, each containing B*N nodes.
+        x = X.permute(1, 0, 2, 3).reshape(C * B * N, F_dim)
+
+        h = self.input_proj(x)
+
+        for conv, norm in zip(self.convs, self.norms):
+            h_new = conv(h, edge_index, edge_type)
+            h_new = F.relu(h_new)
+            h = norm(h + h_new)  # residual connection
+
+        # Extract embeddings from last observed timestep t = C - 1
+        start = (C - 1) * B * N
+        end = C * B * N
+        h_last = h[start:end]  # (B * N, hidden_dim)
+
+        # Predict future displacements
+        delta = self.pred_head(h_last)  # (B * N, H * 2)
+        delta = delta.view(B, N, self.horizon_size, self.output_dim)
+
+        # Convert displacements to future positions
+        last_pos = X[:, -1, :, :2]  # (B, N, 2)
+
+        # Option A: direct offsets from last observed position
+        future = last_pos.unsqueeze(2) + delta  # (B, N, H, 2)
+
+        # Return in same style as other models: (H, B*N, 2)
+        future = future.permute(2, 0, 1, 3).reshape(
+            self.horizon_size,
+            B * N,
+            self.output_dim,
+        )
+
+        return future
+
+
 def build_model(cfg: dict) -> nn.Module:
 
     if cfg["MODEL_NAME"] == "HeteroSTGCN":
@@ -373,5 +515,8 @@ def build_model(cfg: dict) -> nn.Module:
             context_size=cfg["data"]["context_size"],
             horizon_size=cfg["data"]["horizon_size"],
         )
+    elif cfg["MODEL_NAME"] == "SpaceTimeGNN":
+        return SpaceTimeGNN(cfg)
+
     else:
-        print("model not found")
+        raise ValueError(f"Unknown model name: {cfg['MODEL_NAME']}")

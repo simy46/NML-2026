@@ -1,4 +1,5 @@
 import os
+import warnings
 
 import torch
 from torch import Tensor
@@ -49,11 +50,18 @@ class NBATrainer:
         self.horizon_size = cfg["data"]["horizon_size"]
 
         requested_device = cfg["training"].get("device", "cuda")
-        self.device = torch.device(
-            requested_device
-            if torch.cuda.is_available() or requested_device == "cpu"
-            else "cpu"
-        )
+
+        if requested_device == "cuda" and torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif requested_device == "mps" and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+            warnings.warn('Training on cpu, this might take ages.')
+        print(f"Training on {self.device}")
+
+        # Important: keep cfg consistent with actual selected device
+        self.cfg["training"]["device"] = str(self.device)
 
         self.epochs = cfg["training"]["epochs"]
         self.seed = cfg["training"].get("seed", 0)
