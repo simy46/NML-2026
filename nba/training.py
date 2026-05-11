@@ -54,10 +54,11 @@ class NBATrainer:
         if requested_device == "cuda" and torch.cuda.is_available():
             self.device = torch.device("cuda")
         elif requested_device == "mps" and torch.backends.mps.is_available():
+            warnings.warn("Warning - mps seems to not be well supported on PyTorch Geometric. This may lead to crashes.")
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-            warnings.warn('Training on cpu, this might take ages.')
+            warnings.warn('Training on cpu, this might be slow.')
         print(f"Training on {self.device}")
 
         # Important: keep cfg consistent with actual selected device

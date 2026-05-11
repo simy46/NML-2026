@@ -21,7 +21,7 @@ training:
   scheduler_gamma: 0.5
   grad_clip: 10.0
   seed: 0
-  device: mps
+  device: cuda
 
 wandb:
   enabled: true
