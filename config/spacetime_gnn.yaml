@@ -21,14 +21,16 @@ model:
 
 training:
   batch_size: 64
-  epochs: 10
+  epochs: 20
   lr: 0.001
   weight_decay: 0.0005
   scheduler_step_size: 300
   scheduler_gamma: 0.5
   grad_clip: 10.0
   seed: 0
-  device: cpu
+  device: cuda
+  early_stopping_patience: 5
+  early_stopping_delta: 0.0001
 
 wandb:
   enabled: true

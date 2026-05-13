@@ -126,6 +126,114 @@ class NBATrainer:
         finally:
             if run is not None:
                 run.finish()
+    
+    def train_with_early_stopping(
+        self,
+        test_size: float = 0.1,
+        max_epoch: int = 50,
+        patience: int = None,
+        min_delta: float = None,
+    ):
+        """
+        Split the data (test_size for testing, 1-test_size for training).
+        Train until one of the following is satisfied :
+           - Test loss has failed to improve by more than min_delta for patience epochs in a row. 
+           - max_epoch is reached
+        """
+        num_sequences = len(self.data.train_dataset)
+        indices = list(range(num_sequences))
+
+        train_idx, test_idx = train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=self.seed,
+            shuffle=True,
+        )
+
+        train_sampler = FoldSampler(
+            train_idx,
+            self.batch_size,
+            self.data.train_dataset.max_start,
+            seed=self.seed,
+            shuffle=True,
+        )
+        test_sampler = FoldSampler(
+            test_idx,
+            self.batch_size,
+            self.data.train_dataset.max_start,
+            seed=self.seed,
+            shuffle=False,
+        )
+
+        train_loader = DataLoader(
+            self.data.train_dataset,
+            batch_size=self.batch_size,
+            sampler=train_sampler,
+        )
+        test_loader = DataLoader(
+            self.data.train_dataset,
+            batch_size=self.batch_size,
+            sampler=test_sampler,
+        )
+
+        if patience is None:
+            patience = self.cfg["training"].get("early_stopping_patience", None)
+        if min_delta is None:
+            min_delta = self.cfg["training"].get("early_stopping_delta", None)
+        if patience is None or min_delta is None:
+            warnings.warn("patience or min_delta missing from config. Default values used.")
+        early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
+        history = []
+
+        run = self.logger.start()
+
+        try:
+            for epoch in range(max_epoch):
+                print(f"Epoch {epoch + 1}/{max_epoch}")
+
+                train_sampler.set_epoch(epoch)
+                self.model.train()
+                train_loss = self.train_one_epoch(train_loader, "train", silent=True)
+
+                # Reset to the same sampled windows each epoch so holdout loss is comparable.
+                test_sampler.set_epoch(0)
+                self.model.eval()
+                with torch.no_grad():
+                    test_loss = self.train_one_epoch(test_loader, "test", silent=True)
+
+                self.scheduler.step()
+
+                metrics = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "test_loss": test_loss,
+                }
+                history.append(metrics)
+                self.logger.log(metrics)
+
+                print(
+                    f"  [TRAIN] Loss: {train_loss:.4f} | "
+                    f"[TEST] Loss: {test_loss:.4f}"
+                )
+
+                early_stopping(test_loss, self.model)
+                if early_stopping.early_stop:
+                    print(f"Early stopping at epoch {epoch + 1}")
+                    break
+
+            if early_stopping.best_model_state is not None:
+                self.model.load_state_dict(early_stopping.best_model_state)
+
+            torch.save(self.model.state_dict(), self.model_path)
+            print(f"Training Complete. Best model saved as '{self.model_path}'.")
+
+            return history
+
+        finally:
+            if run is not None:
+                run.finish()
+
+
 
     def train_one_epoch(self, dataloader, split, silent=False):
         avg_loss = 0
