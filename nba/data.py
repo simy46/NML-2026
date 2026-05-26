@@ -36,7 +36,7 @@ class NBADataset(Dataset):
             if f.endswith(".pt")
         ]:
             seq = torch.load(f, weights_only=False)  # [T, N, F]
-            seq[:, :, [0, 1]] = (seq[:, :, [0, 1]].clone() - mu) / sigma
+            # seq[:, :, [0, 1]] = (seq[:, :, [0, 1]].clone() - mu) / sigma
 
             if seq.shape[0] >= self.window_size:
                 self.sequences.append(seq)

@@ -1,0 +1,2 @@
+epoch,train_loss,val_loss,lr,tf_prob,time_s
+1,12.992537,10.731045,1.000000e-05,0.000000,15.87

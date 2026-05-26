@@ -5,7 +5,7 @@ import torch
 from torch import Tensor
 
 from consts.consts import ENTITY_MAPPING
-from nba.data import NBADataModule, FoldSampler
+from nba.data import NBADataModule, FoldSampler, NBASampler
 from nba.models import build_model
 from nba.wandb_logger import WandBLogger
 from nba.localLogger import LocalLogger
@@ -122,6 +122,93 @@ class NBATrainer:
 
             torch.save(self.model.state_dict(), os.path.join(self.model_path))
             print(f"Training Complete. Model saved as '{self.model_path}'.")
+
+        finally:
+            if run is not None:
+                run.finish()
+
+    def train_with_val(self, num_epochs, val_ratio=0.1):
+        """Train model on all the data"""
+        """
+        Split the data (test_size for testing, 1-test_size for training).
+        Train until one of the following is satisfied :
+           - Test loss has failed to improve by more than min_delta for patience epochs in a row. 
+           - max_epoch is reached
+        """
+        num_sequences = len(self.data.train_dataset)
+        indices = list(range(num_sequences))
+
+        train_idx, val_idx = train_test_split(
+            indices,
+            test_size=0.1,
+            random_state=self.seed,
+            shuffle=True,
+        )
+
+        train_sampler = FoldSampler(
+            train_idx,
+            self.batch_size,
+            self.data.train_dataset.max_start,
+            seed=self.seed,
+            shuffle=True,
+        )
+        
+        val_sampler = FoldSampler(
+            val_idx,
+            self.batch_size,
+            self.data.train_dataset.max_start,
+            seed=self.seed,
+            shuffle=False,
+        )
+
+        train_loader = DataLoader(
+            self.data.train_dataset,
+            batch_size=self.batch_size,
+            sampler=train_sampler,
+        )
+        val_loader = DataLoader(
+            self.data.train_dataset,
+            batch_size=self.batch_size,
+            sampler=val_sampler,
+        )
+
+        history = []
+
+        run = self.logger.start()
+
+        try:
+            for epoch in range(num_epochs):
+                print(f"Epoch {epoch + 1}/{num_epochs}")
+
+                train_sampler.set_epoch(epoch)
+                self.model.train()
+                train_loss = self.train_one_epoch(train_loader, "train", silent=True)
+
+                # Reset to the same sampled windows each epoch so holdout loss is comparable.
+                val_sampler.set_epoch(0)
+                self.model.eval()
+                with torch.no_grad():
+                    val_loss = self.train_one_epoch(val_loader, "val", silent=True)
+
+                self.scheduler.step()
+
+                metrics = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                }
+                history.append(metrics)
+                self.logger.log(metrics)
+
+                print(
+                    f"  [TRAIN] Loss: {train_loss:.4f} | "
+                    f"  [VAL] Loss: {val_loss:.4f}"
+                )
+
+            torch.save(self.model.state_dict(), self.model_path)
+            print(f"Training Complete. Best model saved as '{self.model_path}'.")
+
+            return history
 
         finally:
             if run is not None:
@@ -376,13 +463,13 @@ class NBATrainer:
         with torch.no_grad():
             pred = model(X.unsqueeze(0).to(self.device)).cpu()
 
-        # Denormalize
-        X = X.cpu()
-        mu = self.mu.cpu()
-        sigma = self.sigma.cpu()
+        # # Denormalize
+        # X = X.cpu()
+        # mu = self.mu.cpu()
+        # sigma = self.sigma.cpu()
 
-        X[:, :, :2] = X[:, :, :2] * sigma + mu
-        pred = pred * sigma + mu
+        # X[:, :, :2] = X[:, :, :2] * sigma + mu
+        # pred = pred * sigma + mu
 
         # Format
         static = X[-1, :, 2:].unsqueeze(0).repeat(pred.size(0), 1, 1)

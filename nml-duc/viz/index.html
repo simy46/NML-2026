@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>NBA Trajectory Viewer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --bg-2: #161a22;
+    --bg-3: #1f242f;
+    --fg: #e6e9ef;
+    --fg-dim: #8a93a6;
+    --accent: #ffb703;
+    --court: #2a2f3a;
+    --court-line: #d9c89c;
+    --team-a: #4a9cf2;
+    --team-b: #ef4d5a;
+    --ball: #ffb703;
+    --good: #5fd07b;
+    --bad: #ef4d5a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    height: 100%; overflow: hidden; }
+  .app { display: grid; grid-template-columns: 260px 1fr 280px;
+    grid-template-rows: 56px 1fr 200px; height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; align-items: center;
+    padding: 0 18px; gap: 18px; background: var(--bg-2);
+    border-bottom: 1px solid #000; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: 0.3px; }
+  header .meta { color: var(--fg-dim); font-size: 12px; display: flex; gap: 16px; }
+  header .meta b { color: var(--fg); font-weight: 600; }
+  aside.left, aside.right { background: var(--bg-2); border-right: 1px solid #000;
+    overflow: hidden; display: flex; flex-direction: column; }
+  aside.right { border-right: none; border-left: 1px solid #000; }
+  .pane-title { padding: 10px 14px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--fg-dim); border-bottom: 1px solid #000;
+    background: var(--bg-3); }
+  .sample-list { overflow-y: auto; flex: 1; }
+  .sample-list .row { display: flex; justify-content: space-between;
+    padding: 7px 14px; cursor: pointer; font-size: 13px;
+    border-bottom: 1px solid #00000055; }
+  .sample-list .row:hover { background: #ffffff10; }
+  .sample-list .row.active { background: #ffb70322; color: var(--accent); }
+  .sample-list .row .ade { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+  .sample-list .row.active .ade { color: var(--accent); }
+  .filter { padding: 8px 10px; background: var(--bg-3); border-bottom: 1px solid #000;
+    display: flex; gap: 6px; align-items: center; }
+  .filter input { flex: 1; background: var(--bg); color: var(--fg);
+    border: 1px solid #2a2f3a; border-radius: 4px; padding: 5px 8px; font-size: 12px; }
+  main { background: var(--bg); position: relative; display: flex;
+    align-items: center; justify-content: center; padding: 12px; }
+  canvas#court { display: block; background: var(--court); border-radius: 6px;
+    box-shadow: 0 6px 30px #00000088; cursor: crosshair; }
+  footer { grid-column: 1 / -1; background: var(--bg-2);
+    border-top: 1px solid #000; padding: 10px 18px;
+    display: grid; grid-template-columns: auto 1fr auto; gap: 18px; align-items: stretch; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls button { background: var(--bg-3); color: var(--fg); border: 1px solid #2a2f3a;
+    border-radius: 4px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  .controls button:hover { background: #2a3140; }
+  .controls button.primary { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
+  .scrubber { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  .scrubber-row { display: flex; gap: 10px; align-items: center; }
+  .scrubber input[type=range] { flex: 1; }
+  .frame-label { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--fg-dim);
+    min-width: 100px; }
+  .frame-label .phase { display: inline-block; padding: 1px 6px; border-radius: 3px;
+    margin-left: 4px; font-size: 11px; }
+  .phase.context { background: #3d4250; color: var(--fg); }
+  .phase.future { background: var(--accent); color: #1a1a1a; }
+  .stats { display: flex; gap: 18px; align-items: center; font-size: 13px;
+    font-variant-numeric: tabular-nums; }
+  .stats .k { color: var(--fg-dim); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.6px; margin-right: 4px; }
+  .stats .v { font-weight: 600; }
+  .right-body { padding: 12px 14px; overflow-y: auto; flex: 1; }
+  .layer-toggles { display: flex; flex-direction: column; gap: 8px; }
+  .layer-toggles label { display: flex; align-items: center; gap: 8px;
+    font-size: 13px; cursor: pointer; }
+  .legend { margin-top: 14px; }
+  .legend .row { display: flex; align-items: center; gap: 8px; padding: 3px 0;
+    font-size: 12px; color: var(--fg); }
+  .swatch { width: 14px; height: 14px; border-radius: 50%; }
+  .swatch.hollow { background: transparent; border: 2px solid currentColor; }
+  .err-chart { padding: 10px 14px; }
+  .err-chart canvas { width: 100%; display: block; }
+  .pill { background: var(--bg-3); border-radius: 12px; padding: 2px 8px; font-size: 11px; color: var(--fg-dim); }
+  .speed-row { display: flex; align-items: center; gap: 6px; }
+  .speed-row input[type=range] { width: 90px; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a2f3a; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .kbd { background: var(--bg-3); border: 1px solid #2a2f3a; border-radius: 3px;
+    padding: 0 4px; font-size: 11px; color: var(--fg-dim); font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>NBA Trajectory Viewer</h1>
+    <div class="meta" id="metaLine">loading…</div>
+    <div style="flex:1"></div>
+    <span class="pill"><span class="kbd">Space</span> play · <span class="kbd">←/→</span> frame · <span class="kbd">↑/↓</span> sample · <span class="kbd">click</span> highlight</span>
+  </header>
+
+  <aside class="left">
+    <div class="pane-title">Samples (by ADE)</div>
+    <div class="filter">
+      <input id="filter" placeholder="filter id or ADE…" />
+    </div>
+    <div class="sample-list" id="sampleList"></div>
+  </aside>
+
+  <main>
+    <canvas id="court" width="940" height="500"></canvas>
+  </main>
+
+  <aside class="right">
+    <div class="pane-title">Layers</div>
+    <div class="right-body">
+      <div class="layer-toggles">
+        <label><input type="checkbox" id="toggleContext" checked> Context (frames 0–7)</label>
+        <label><input type="checkbox" id="togglePred" checked> Prediction</label>
+        <label><input type="checkbox" id="toggleGt" checked> Ground truth</label>
+        <label><input type="checkbox" id="toggleTrails" checked> Trails</label>
+        <label><input type="checkbox" id="toggleErrorLines" checked> Error lines</label>
+        <label><input type="checkbox" id="toggleLabels"> Entity labels</label>
+        <label><input type="checkbox" id="toggleFullRollout"> Show full rollout at once</label>
+      </div>
+      <div class="legend">
+        <div class="pane-title" style="background:none;border:none;padding:10px 0 4px;">Legend</div>
+        <div class="row" style="color:var(--team-a);"><div class="swatch" style="background:var(--team-a);"></div>Team A · prediction</div>
+        <div class="row" style="color:var(--team-a);"><div class="swatch hollow"></div>Team A · ground truth</div>
+        <div class="row" style="color:var(--team-b);"><div class="swatch" style="background:var(--team-b);"></div>Team B · prediction</div>
+        <div class="row" style="color:var(--team-b);"><div class="swatch hollow"></div>Team B · ground truth</div>
+        <div class="row" style="color:var(--ball);"><div class="swatch" style="background:var(--ball);"></div>Ball · prediction</div>
+        <div class="row" style="color:var(--ball);"><div class="swatch hollow"></div>Ball · ground truth</div>
+      </div>
+    </div>
+    <div class="pane-title">Per-step error (ft)</div>
+    <div class="err-chart">
+      <canvas id="errChart" width="280" height="120"></canvas>
+    </div>
+  </aside>
+
+  <footer>
+    <div class="controls">
+      <button id="prevSample" title="Previous sample (↑)">⟨ Sample</button>
+      <button id="prevFrame" title="Previous frame (←)">◀</button>
+      <button id="playBtn" class="primary" title="Play/Pause (space)">▶ Play</button>
+      <button id="nextFrame" title="Next frame (→)">▶</button>
+      <button id="nextSample" title="Next sample (↓)">Sample ⟩</button>
+    </div>
+    <div class="scrubber">
+      <div class="scrubber-row">
+        <input type="range" id="frameSlider" min="0" max="19" value="0" />
+        <div class="frame-label" id="frameLabel">frame 0/19</div>
+      </div>
+      <div class="scrubber-row">
+        <div class="speed-row">
+          <span style="font-size:12px;color:var(--fg-dim);">speed</span>
+          <input type="range" id="speedSlider" min="1" max="20" value="6" />
+          <span id="speedLabel" style="font-size:12px;color:var(--fg-dim);font-variant-numeric:tabular-nums;width:40px;">6 fps</span>
+        </div>
+        <div style="flex:1"></div>
+        <label style="font-size:12px;color:var(--fg-dim);"><input type="checkbox" id="loopChk" checked> loop</label>
+      </div>
+    </div>
+    <div class="stats">
+      <div><span class="k">sample</span><span class="v" id="statId">—</span></div>
+      <div><span class="k">ADE</span><span class="v" id="statAde">—</span></div>
+      <div><span class="k">FDE</span><span class="v" id="statFde">—</span></div>
+      <div><span class="k">focus</span><span class="v" id="statFocus">none</span></div>
+    </div>
+  </footer>
+</div>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  const D = window.VIZ_DATA;
+  if (!D) {
+    document.body.innerHTML = '<div style="padding:40px;font-family:system-ui;">' +
+      '<h1>No data.</h1><p>Run <code>python viz/make_data.py</code> first to generate <code>viz/data.js</code>.</p></div>';
+    return;
+  }
+
+  const C = D.meta.context_size;
+  const H = D.meta.horizon_size;
+  const TOTAL = C + H;  // frames 0..TOTAL-1
+  const XHALF = D.meta.court_x_half;
+  const YHALF = D.meta.court_y_half;
+
+  // ---------- state ----------
+  let sampleIdx = 0;
+  let frame = 0;
+  let playing = false;
+  let speed = 6;
+  let lastTick = 0;
+  let focusEntity = null;  // index in [0, N)
+
+  const toggles = {
+    context: document.getElementById('toggleContext'),
+    pred: document.getElementById('togglePred'),
+    gt: document.getElementById('toggleGt'),
+    trails: document.getElementById('toggleTrails'),
+    errorLines: document.getElementById('toggleErrorLines'),
+    labels: document.getElementById('toggleLabels'),
+    fullRollout: document.getElementById('toggleFullRollout'),
+  };
+  const loopChk = document.getElementById('loopChk');
+
+  // ---------- DOM ----------
+  const canvas = document.getElementById('court');
+  const ctx = canvas.getContext('2d');
+  const errCanvas = document.getElementById('errChart');
+  const errCtx = errCanvas.getContext('2d');
+  const sampleList = document.getElementById('sampleList');
+  const filterInput = document.getElementById('filter');
+  const frameSlider = document.getElementById('frameSlider');
+  const frameLabel = document.getElementById('frameLabel');
+  const speedSlider = document.getElementById('speedSlider');
+  const speedLabel = document.getElementById('speedLabel');
+  const playBtn = document.getElementById('playBtn');
+  const metaLine = document.getElementById('metaLine');
+  const statId = document.getElementById('statId');
+  const statAde = document.getElementById('statAde');
+  const statFde = document.getElementById('statFde');
+  const statFocus = document.getElementById('statFocus');
+
+  frameSlider.max = String(TOTAL - 1);
+
+  metaLine.innerHTML =
+    `<span><b>${D.samples.length}</b> samples</span>` +
+    `<span>mean <b>ADE</b> = ${D.meta.aggregate.mean_ade.toFixed(2)} ft</span>` +
+    `<span>mean <b>FDE</b> = ${D.meta.aggregate.mean_fde.toFixed(2)} ft</span>` +
+    `<span>ckpt <b>${D.meta.model_path}</b></span>`;
+
+  // ---------- coordinate transforms ----------
+  // Storage frame: x ∈ [-XHALF, +XHALF], y ∈ [-YHALF, +YHALF].
+  // Canvas: x grows right, y grows down. We add a small margin.
+  let cssW = canvas.width, cssH = canvas.height;
+  const margin = 18;
+  function layout() {
+    const W = cssW - 2 * margin;
+    const Ht = cssH - 2 * margin;
+    // Preserve aspect (94:50 ≈ 1.88).
+    const aspect = (2 * XHALF) / (2 * YHALF);
+    let drawW = W, drawH = W / aspect;
+    if (drawH > Ht) { drawH = Ht; drawW = Ht * aspect; }
+    const ox = margin + (W - drawW) / 2;
+    const oy = margin + (Ht - drawH) / 2;
+    return { ox, oy, drawW, drawH };
+  }
+  function toPx(x, y, L) {
+    const u = (x + XHALF) / (2 * XHALF);
+    const v = (y + YHALF) / (2 * YHALF);
+    return [L.ox + u * L.drawW, L.oy + (1 - v) * L.drawH];
+  }
+  function fromPx(px, py, L) {
+    const u = (px - L.ox) / L.drawW;
+    const v = 1 - (py - L.oy) / L.drawH;
+    return [u * 2 * XHALF - XHALF, v * 2 * YHALF - YHALF];
+  }
+
+  // ---------- drawing ----------
+  function drawCourt(L) {
+    ctx.fillStyle = '#202734';
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    const lineColor = '#d9c89c';
+    const hoopColor = '#ef6d3a';
+    const ftPx = (f) => (f / (2 * XHALF)) * L.drawW;  // feet → px (isotropic)
+
+    // Court fill + outer rectangle.
+    const [x0, y0] = toPx(-XHALF, -YHALF, L);
+    const [x1, y1] = toPx(XHALF, YHALF, L);
+    ctx.fillStyle = '#2a3140';
+    ctx.fillRect(x0, y1, x1 - x0, y0 - y1);
+
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x0, y1, x1 - x0, y0 - y1);
+
+    // Half-court line.
+    const [mx, mt] = toPx(0, YHALF, L);
+    const [, mb] = toPx(0, -YHALF, L);
+    ctx.beginPath(); ctx.moveTo(mx, mt); ctx.lineTo(mx, mb); ctx.stroke();
+
+    // Center circle (radius 6 ft).
+    const [cx, cy] = toPx(0, 0, L);
+    ctx.beginPath(); ctx.arc(cx, cy, ftPx(6), 0, Math.PI * 2); ctx.stroke();
+
+    for (const side of [-1, 1]) {
+      const hoopX = side * (XHALF - 5.25);
+      const [hx, hy] = toPx(hoopX, 0, L);
+
+      // Paint/key: 16 ft wide × 19 ft deep from baseline.
+      const keyDepth = 19, keyHalf = 8;
+      const [kx0, ky0] = toPx(side * (XHALF - keyDepth), -keyHalf, L);
+      const [kx1, ky1] = toPx(side * XHALF, keyHalf, L);
+      ctx.strokeRect(Math.min(kx0, kx1), Math.min(ky0, ky1),
+                     Math.abs(kx1 - kx0), Math.abs(ky1 - ky0));
+
+      // Free-throw circle (radius 6 ft, centered at top of key).
+      const [fx, fy] = toPx(side * (XHALF - keyDepth), 0, L);
+      ctx.beginPath(); ctx.arc(fx, fy, ftPx(6), 0, Math.PI * 2); ctx.stroke();
+
+      // Hoop (radius 0.75 ft).
+      ctx.strokeStyle = hoopColor;
+      ctx.beginPath(); ctx.arc(hx, hy, ftPx(0.75), 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = lineColor;
+
+      // Three-point line: corner lines at y=±22 ft from baseline to where the arc starts;
+      // arc r=23.75 ft around hoop. arc-meet-corner is at dxArc = sqrt(23.75² - 22²) ≈ 8.95.
+      const cornerY = 22;
+      const dxArc = Math.sqrt(23.75 * 23.75 - cornerY * cornerY);
+      const arcStartX = hoopX + side * dxArc;  // toward center
+      for (const sy of [-1, 1]) {
+        const [a, b] = toPx(side * XHALF, sy * cornerY, L);
+        const [c, d] = toPx(arcStartX, sy * cornerY, L);
+        ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+      }
+      // Arc itself. In world coords arc spans angles ±atan2(cornerY, dxArc) from the
+      // hoop, opening toward court center. Canvas's y is flipped vs world, but a
+      // symmetric arc about a horizontal axis is unaffected, so the same range works.
+      const halfAngle = Math.atan2(cornerY, dxArc);
+      const center = side === -1 ? 0 : Math.PI;
+      ctx.beginPath();
+      ctx.arc(hx, hy, ftPx(23.75), center - halfAngle, center + halfAngle);
+      ctx.stroke();
+    }
+  }
+
+  function entityColor(team) {
+    if (team === 0) return getComputedStyle(document.documentElement).getPropertyValue('--ball').trim();
+    if (team < 0) return getComputedStyle(document.documentElement).getPropertyValue('--team-a').trim();
+    return getComputedStyle(document.documentElement).getPropertyValue('--team-b').trim();
+  }
+
+  function getPositions(sample, t) {
+    // Returns [N][2] positions for frame t (combined ctx+gt for "actual"),
+    // and a separate predicted array (only valid for t >= C).
+    const actual = t < C ? sample.context[t] : sample.gt_future[t - C];
+    const pred = t < C ? sample.context[t] : sample.pred_future[t - C];
+    return { actual, pred };
+  }
+
+  function drawFrame() {
+    const L = layout();
+    drawCourt(L);
+    const sample = D.samples[sampleIdx];
+    const N = sample.teams.length;
+    const t = frame;
+
+    // -------- trails (faded segments from t=0 to current) --------
+    if (toggles.trails.checked) {
+      const trailEnd = toggles.fullRollout.checked ? TOTAL - 1 : t;
+      for (let n = 0; n < N; n++) {
+        const team = sample.teams[n];
+        if (focusEntity !== null && focusEntity !== n) continue;
+        const baseColor = entityColor(team);
+
+        // Actual (context + GT) trail.
+        if (toggles.gt.checked || trailEnd < C) {
+          ctx.beginPath();
+          for (let k = 0; k <= trailEnd; k++) {
+            const pos = k < C ? sample.context[k][n] : sample.gt_future[k - C][n];
+            const [px, py] = toPx(pos[0], pos[1], L);
+            if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = baseColor + '88';
+          ctx.lineWidth = focusEntity === n ? 3 : 1.5;
+          ctx.stroke();
+        }
+
+        // Predicted trail (only over horizon).
+        if (toggles.pred.checked && trailEnd >= C) {
+          ctx.beginPath();
+          // Start from last context point so the pred trail visually continues.
+          const start = sample.context[C - 1][n];
+          const [sx, sy] = toPx(start[0], start[1], L);
+          ctx.moveTo(sx, sy);
+          for (let k = C; k <= trailEnd; k++) {
+            const pos = sample.pred_future[k - C][n];
+            const [px, py] = toPx(pos[0], pos[1], L);
+            ctx.lineTo(px, py);
+          }
+          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = baseColor + 'cc';
+          ctx.lineWidth = focusEntity === n ? 3 : 1.8;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+
+    // -------- error lines connecting pred to GT at current frame --------
+    if (toggles.errorLines.checked && t >= C && toggles.pred.checked && toggles.gt.checked) {
+      const tt = t - C;
+      const gt = sample.gt_future[tt];
+      const pd = sample.pred_future[tt];
+      ctx.strokeStyle = '#ffffff44';
+      ctx.lineWidth = 1;
+      for (let n = 0; n < N; n++) {
+        if (focusEntity !== null && focusEntity !== n) continue;
+        const [gx, gy] = toPx(gt[n][0], gt[n][1], L);
+        const [pxv, pyv] = toPx(pd[n][0], pd[n][1], L);
+        ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(pxv, pyv); ctx.stroke();
+      }
+    }
+
+    // -------- markers --------
+    const showContext = toggles.context.checked && t < C;
+    const showActual = (t < C) ? showContext : toggles.gt.checked;
+    const showPred = toggles.pred.checked && t >= C;
+
+    function drawMarker(x, y, color, hollow, big, label) {
+      const r = big ? 9 : 7;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      if (hollow) {
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = '#0f1115';
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#00000055';
+        ctx.stroke();
+      }
+      if (label) {
+        ctx.fillStyle = '#0f1115';
+        ctx.font = 'bold 10px ui-sans-serif, system-ui';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(label, x, y);
+      }
+    }
+
+    // Per-team numeric labels 1..5; ball gets "B".
+    const labels = new Array(N);
+    let cA = 0, cB = 0;
+    for (let n = 0; n < N; n++) {
+      const t_ = sample.teams[n];
+      if (t_ === 0) labels[n] = 'B';
+      else if (t_ < 0) labels[n] = String(++cA);
+      else labels[n] = String(++cB);
+    }
+
+    for (let n = 0; n < N; n++) {
+      const team = sample.teams[n];
+      const color = entityColor(team);
+      const focused = focusEntity === n;
+      const isFocusOrAll = focusEntity === null || focused;
+      if (!isFocusOrAll) continue;
+
+      // Actual position at frame t.
+      if (showActual) {
+        const pos = (t < C) ? sample.context[t][n] : sample.gt_future[t - C][n];
+        const [px, py] = toPx(pos[0], pos[1], L);
+        const isContext = t < C;
+        drawMarker(px, py, color, !isContext, focused, toggles.labels.checked ? labels[n] : null);
+      }
+      // Predicted position at frame t (filled).
+      if (showPred) {
+        const pos = sample.pred_future[t - C][n];
+        const [px, py] = toPx(pos[0], pos[1], L);
+        drawMarker(px, py, color, false, focused, toggles.labels.checked ? labels[n] : null);
+      }
+    }
+
+    // -------- frame phase indicator --------
+    const isCtx = t < C;
+    frameLabel.innerHTML = `frame <b>${t}</b>/${TOTAL - 1} <span class="phase ${isCtx ? 'context' : 'future'}">${isCtx ? 'CONTEXT' : 'FUTURE+'+(t-C+1)}</span>`;
+  }
+
+  function drawErrChart() {
+    const sample = D.samples[sampleIdx];
+    const w = errCanvas.width, h = errCanvas.height;
+    errCtx.clearRect(0, 0, w, h);
+    errCtx.fillStyle = '#161a22';
+    errCtx.fillRect(0, 0, w, h);
+
+    const data = sample.per_step_error;
+    const pad = 22;
+    const innerW = w - pad - 8;
+    const innerH = h - pad - 12;
+    const maxY = Math.max(...data, 1);
+
+    errCtx.strokeStyle = '#2a2f3a';
+    errCtx.beginPath();
+    errCtx.moveTo(pad, h - pad); errCtx.lineTo(w - 4, h - pad);
+    errCtx.moveTo(pad, h - pad); errCtx.lineTo(pad, 6);
+    errCtx.stroke();
+
+    errCtx.fillStyle = '#8a93a6';
+    errCtx.font = '10px ui-sans-serif';
+    errCtx.textAlign = 'right';
+    errCtx.fillText(maxY.toFixed(1), pad - 3, 12);
+    errCtx.fillText('0', pad - 3, h - pad);
+
+    // Bars.
+    const barW = innerW / data.length * 0.7;
+    const step = innerW / data.length;
+    for (let i = 0; i < data.length; i++) {
+      const bh = (data[i] / maxY) * innerH;
+      const x = pad + i * step + (step - barW) / 2;
+      const y = h - pad - bh;
+      const active = (frame >= C && (frame - C) === i);
+      errCtx.fillStyle = active ? '#ffb703' : '#4a9cf2bb';
+      errCtx.fillRect(x, y, barW, bh);
+      if (i % 2 === 0) {
+        errCtx.fillStyle = '#8a93a6';
+        errCtx.textAlign = 'center';
+        errCtx.fillText(String(i + 1), x + barW / 2, h - pad + 11);
+      }
+    }
+    errCtx.fillStyle = '#8a93a6';
+    errCtx.textAlign = 'left';
+    errCtx.fillText('horizon step (1..' + H + ')', pad, h - 2);
+  }
+
+  // ---------- sample list ----------
+  function renderSampleList() {
+    const q = filterInput.value.trim().toLowerCase();
+    sampleList.innerHTML = '';
+    D.samples.forEach((s, i) => {
+      const txt = `#${s.id}  ${s.ade.toFixed(2)}`;
+      if (q && !txt.toLowerCase().includes(q)) return;
+      const row = document.createElement('div');
+      row.className = 'row' + (i === sampleIdx ? ' active' : '');
+      row.innerHTML = `<span>#${s.id}</span><span class="ade">${s.ade.toFixed(2)} ft</span>`;
+      row.onclick = () => selectSample(i);
+      sampleList.appendChild(row);
+    });
+  }
+
+  function selectSample(i) {
+    sampleIdx = Math.max(0, Math.min(D.samples.length - 1, i));
+    focusEntity = null;
+    statFocus.textContent = 'none';
+    const s = D.samples[sampleIdx];
+    statId.textContent = '#' + s.id;
+    statAde.textContent = s.ade.toFixed(2) + ' ft';
+    statFde.textContent = s.fde.toFixed(2) + ' ft';
+    renderSampleList();
+    // Snap any active row into view.
+    const active = sampleList.querySelector('.row.active');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+    redraw();
+  }
+
+  function setFrame(t) {
+    frame = Math.max(0, Math.min(TOTAL - 1, t));
+    frameSlider.value = String(frame);
+    redraw();
+  }
+
+  function redraw() {
+    drawFrame();
+    drawErrChart();
+  }
+
+  // ---------- entity hit-test ----------
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const sy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const sample = D.samples[sampleIdx];
+    const N = sample.teams.length;
+    const L = layout();
+    let best = -1, bestD2 = 18 * 18;
+    for (let n = 0; n < N; n++) {
+      const actual = frame < C ? sample.context[frame][n] : sample.gt_future[frame - C][n];
+      const pred = frame < C ? sample.context[frame][n] : sample.pred_future[frame - C][n];
+      for (const pos of [actual, pred]) {
+        const [px, py] = toPx(pos[0], pos[1], L);
+        const d2 = (px - sx) * (px - sx) + (py - sy) * (py - sy);
+        if (d2 < bestD2) { bestD2 = d2; best = n; }
+      }
+    }
+    if (best >= 0) {
+      focusEntity = (focusEntity === best) ? null : best;
+      const labels = [];
+      const cA = { c: 0 }, cB = { c: 0 };
+      for (let n = 0; n < N; n++) {
+        const t_ = sample.teams[n];
+        if (t_ === 0) labels[n] = 'Ball';
+        else if (t_ < 0) labels[n] = 'Team A #' + (++cA.c);
+        else labels[n] = 'Team B #' + (++cB.c);
+      }
+      statFocus.textContent = focusEntity === null ? 'none' : labels[focusEntity];
+    } else {
+      focusEntity = null;
+      statFocus.textContent = 'none';
+    }
+    redraw();
+  });
+
+  // ---------- playback ----------
+  function loop(ts) {
+    if (playing) {
+      if (ts - lastTick > 1000 / speed) {
+        lastTick = ts;
+        if (frame >= TOTAL - 1) {
+          if (loopChk.checked) setFrame(0);
+          else togglePlay(false);
+        } else {
+          setFrame(frame + 1);
+        }
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  function togglePlay(force) {
+    playing = (force === undefined) ? !playing : force;
+    playBtn.textContent = playing ? '❚❚ Pause' : '▶ Play';
+  }
+
+  // ---------- wiring ----------
+  frameSlider.addEventListener('input', (e) => setFrame(parseInt(e.target.value)));
+  speedSlider.addEventListener('input', (e) => {
+    speed = parseInt(e.target.value);
+    speedLabel.textContent = speed + ' fps';
+  });
+  playBtn.onclick = () => togglePlay();
+  document.getElementById('prevFrame').onclick = () => setFrame(frame - 1);
+  document.getElementById('nextFrame').onclick = () => setFrame(frame + 1);
+  document.getElementById('prevSample').onclick = () => selectSample(sampleIdx - 1);
+  document.getElementById('nextSample').onclick = () => selectSample(sampleIdx + 1);
+  for (const k in toggles) toggles[k].addEventListener('change', redraw);
+  filterInput.addEventListener('input', renderSampleList);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space') { togglePlay(); e.preventDefault(); }
+    else if (e.code === 'ArrowLeft') setFrame(frame - 1);
+    else if (e.code === 'ArrowRight') setFrame(frame + 1);
+    else if (e.code === 'ArrowUp') selectSample(sampleIdx - 1);
+    else if (e.code === 'ArrowDown') selectSample(sampleIdx + 1);
+  });
+
+  // Resize the canvas to its container, keeping it crisp on retina screens.
+  function resizeCanvas() {
+    const wrap = canvas.parentElement;
+    const w = Math.max(200, wrap.clientWidth - 24);
+    const h = Math.max(120, wrap.clientHeight - 24);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cssW = w; cssH = h;
+    redraw();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // Optional URL hooks for snapshot testing: ?sample=12&frame=11
+  const params = new URLSearchParams(location.search);
+  const sParam = parseInt(params.get('sample') ?? '0');
+  const fParam = parseInt(params.get('frame') ?? '0');
+  selectSample(Number.isFinite(sParam) ? sParam : 0);
+  speedLabel.textContent = speed + ' fps';
+  resizeCanvas();
+  if (Number.isFinite(fParam) && fParam > 0) setFrame(fParam);
+})();
+</script>
+</body>
+</html>
