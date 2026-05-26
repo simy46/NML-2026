@@ -18,7 +18,7 @@ model:
 
 training:
   batch_size: 64
-  epochs: 10
+  epochs: 40
   lr: 0.001
   weight_decay: 0.0005
   scheduler_step_size: 300
@@ -30,5 +30,51 @@ training:
 wandb:
   enabled: true
   mode: offline
+
+optimization: # optimization ranges
+  lr:
+    type: float
+    low: 0.0001
+    high: 0.01
+    log: true
+    section: training
+  weight_decay:
+    type: float
+    low: 0.00001
+    high: 0.001
+    log: true
+    section: training
+  batch_size:
+    type: int
+    low: 32
+    high: 128
+    section: training
+  state_dim_GNN:
+    type: int
+    low: 16
+    high: 64
+    section: model
+  state_dim_RNN:
+    type: int
+    low: 32
+    high: 128
+    section: model
+  state_dim_MLP:
+    type: int
+    low: 32
+    high: 128
+    section: model
+  num_nodes:
+    type: int
+    low: 32
+    high: 128
+    section: model
+  graph_conn_radius:
+    type: float
+    low: 0.1
+    high: 1.0
+    section: model
+
+
 
   
